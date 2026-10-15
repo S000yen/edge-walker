@@ -1,0 +1,56 @@
+name: release
+
+# v0.1.0 のようなタグをpushすると，exeを2種類ビルドしてReleaseに添付する
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # 軽い版：.NET 10 デスクトップランタイムが入っている人向け
+      - name: publish (framework-dependent)
+        run: dotnet publish EdgeWalker.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o out/lite
+
+      # 単体版：.NETが入っていない人向け（ランタイム込み・大きい）
+      - name: publish (self-contained)
+        run: dotnet publish EdgeWalker.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out/full
+
+      - name: collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item out/lite/EdgeWalker.exe dist/EdgeWalker-lite.exe
+          Copy-Item out/full/EdgeWalker.exe dist/EdgeWalker-standalone.exe
+          Get-FileHash dist/*.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content dist/SHA256SUMS.txt
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: create release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          - **EdgeWalker-lite.exe** : 軽い版。.NET 10 デスクトップランタイムが必要です。
+          - **EdgeWalker-standalone.exe** : 単体版。.NETが入っていなくても動きます（サイズ大）。
+          署名なしのため，SmartScreenの警告が出ることがあります。SHA-256は SHA256SUMS.txt を参照。
+          "@
+          gh release create "${{ github.ref_name }}" dist/EdgeWalker-lite.exe dist/EdgeWalker-standalone.exe dist/SHA256SUMS.txt --title "${{ github.ref_name }}" --notes $notes
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          name: exe
+          path: dist/
