@@ -1,10 +1,16 @@
 name: release
 
-# v0.1.0 のようなタグをpushすると，exeを2種類ビルドしてReleaseに添付する
+# タグ(v*)のpush，または手動実行（Actionsタブ → Run workflow でタグ名を入力）で，
+# exeを2種類ビルドしてReleaseに添付する
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Releaseのタグ（例: v0.1.0）'
+        required: true
+        default: 'v0.1.0'
 
 permissions:
   contents: write
@@ -37,20 +43,14 @@ jobs:
           Get-ChildItem dist | Format-Table Name, Length
 
       - name: create release
-        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           $notes = @"
           - **EdgeWalker-lite.exe** : 軽い版。.NET 10 デスクトップランタイムが必要です。
           - **EdgeWalker-standalone.exe** : 単体版。.NETが入っていなくても動きます（サイズ大）。
           署名なしのため，SmartScreenの警告が出ることがあります。SHA-256は SHA256SUMS.txt を参照。
           "@
-          gh release create "${{ github.ref_name }}" dist/EdgeWalker-lite.exe dist/EdgeWalker-standalone.exe dist/SHA256SUMS.txt --title "${{ github.ref_name }}" --notes $notes
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        with:
-          name: exe
-          path: dist/
+          gh release create $env:TAG dist/EdgeWalker-lite.exe dist/EdgeWalker-standalone.exe dist/SHA256SUMS.txt --target ${{ github.sha }} --title $env:TAG --notes $notes
