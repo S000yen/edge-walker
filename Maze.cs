@@ -6,6 +6,9 @@ namespace EdgeWalker;
 // ゴーストの家（2x2）を1つ置く．家のまわりは壁で囲み，入口は1辺（2マス幅）だけ．主人公は入れない．
 // 画面の左右・上下の端どうしをつなぐワープを1組ずつ置く．
 
+/// <summary>迷路の種類．Island=壁のかたまり（島）を並べる／Grid=通路も壁も1マス幅の格子</summary>
+public enum MazeKind { Island, Grid }
+
 public sealed class Maze
 {
     public const int Far = 1_000_000;
@@ -23,6 +26,8 @@ public sealed class Maze
     public int GateDir;                                // 家から入口の外へ向かう向き（0右 1左 2下 3上）
     public readonly int[] GateOut = new int[2];        // 入口のすぐ外の通路のマス（2マス）
     public int WarpRow = -1, WarpCol = -1;             // 左右ワープの行，上下ワープの列
+    public MazeKind Kind = MazeKind.Island;
+    public int X1, Y1;                                 // ワープでつながる右端の列・下端の行（島型は W-1, H-1．格子型は偶数に合わせるので W-2, H-2 のこともある）
 
     private Maze(int w, int h)
     {
@@ -31,6 +36,8 @@ public sealed class Maze
         Wall = new bool[w * h];
         House = new bool[w * h];
         Notch = new bool[w * h];
+        X1 = w - 1;
+        Y1 = h - 1;
     }
 
     public int Idx(int x, int y) => y * W + x;
@@ -41,31 +48,226 @@ public sealed class Maze
     public bool IsSolid(int x, int y) => InRange(x, y) && Wall[y * W + x] && !House[y * W + x] && !Notch[y * W + x];
 
     /// <summary>マス c から向き d へ1マス進んだ先（ワープを含む）．進めなければ -1</summary>
-    public int Next(int c, int d)
+    public int Next(int c, int d, bool warp = true)
     {
         int x = c % W, y = c / W, nx = x + Dx[d], ny = y + Dy[d];
-        if (d == 1 && x == 0 && y == WarpRow) nx = W - 1;
-        else if (d == 0 && x == W - 1 && y == WarpRow) nx = 0;
-        else if (d == 3 && y == 0 && x == WarpCol) ny = H - 1;
-        else if (d == 2 && y == H - 1 && x == WarpCol) ny = 0;
+        if (!warp) { }
+        else if (d == 1 && x == 0 && y == WarpRow) nx = X1;
+        else if (d == 0 && x == X1 && y == WarpRow) nx = 0;
+        else if (d == 3 && y == 0 && x == WarpCol) ny = Y1;
+        else if (d == 2 && y == Y1 && x == WarpCol) ny = 0;
         if (!IsOpen(nx, ny)) return -1;
         return ny * W + nx;
     }
 
     public bool IsWarpCell(int x, int y)
-        => (y == WarpRow && (x == 0 || x == W - 1)) || (x == WarpCol && (y == 0 || y == H - 1));
+        => (y == WarpRow && (x == 0 || x == X1)) || (x == WarpCol && (y == 0 || y == Y1));
 
     /// <summary>家の中の4マスのうち slot 番目（0..3）</summary>
     public int HouseCell(int slot) => (HouseY + (slot >> 1)) * W + HouseX + (slot & 1);
 
-    public static Maze Generate(int w, int h, IRng rng)
+    public static Maze Generate(int w, int h, IRng rng, MazeKind kind = MazeKind.Island)
     {
-        for (int attempt = 0; attempt < 20; attempt++)
+        for (int attempt = 0; attempt < 200; attempt++)
         {
-            var m = TryGenerate(w, h, rng);
+            var m = kind == MazeKind.Grid ? TryGenerateGrid(w, h, rng) : TryGenerate(w, h, rng);
             if (m != null) return m;
         }
+        if (kind == MazeKind.Grid) return Generate(w, h, rng, MazeKind.Island);   // 格子型が作れない大きさのときは島型
         throw new InvalidOperationException("迷路を作れませんでした");
+    }
+
+    /// <summary>
+    /// 格子型：通路のマスは偶数の座標，その間（奇数）が壁．通路は曲がり角と交差点だけで，行き止まりはない．
+    /// 家（4x4）は格子の1か所を占め，入口の向きによって，反対側の壁だけ2マスの厚みになる．
+    /// </summary>
+    private static readonly (int, int)[] Four = { (1, 0), (-1, 0), (0, 1), (0, -1) };
+
+    private static Maze? TryGenerateGrid(int w, int h, IRng rng)
+    {
+        var m = new Maze(w, h) { Kind = MazeKind.Grid };
+        m.X1 = (w - 1) & ~1;
+        m.Y1 = (h - 1) & ~1;
+        int nx = m.X1 / 2 + 1, ny = m.Y1 / 2 + 1;
+        if (nx < 6 || ny < 5) return null;
+        Array.Fill(m.Wall, true);
+
+        // 偶数のときに余る右端・下端は，見えない壁にする．左下の凹み（残りの命）も同じ
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (x > m.X1 || y > m.Y1) m.Notch[y * w + x] = true;
+        for (int x = 0; x < 2; x++) m.Notch[(h - 1) * w + x] = true;
+        var dead = new bool[nx * ny];                  // 家や凹みで使えなくなった通路の点
+        if (m.Y1 == h - 1) dead[(ny - 1) * nx] = true;
+
+        // 家：入口の外側が通路の列（行）に乗るように，向きに合わせて座標の偶奇を決める
+        int gate = rng.Next(4);                        // 0右 1左 2下 3上
+        int x0 = -1, y0 = -1;
+        for (int t = 0; t < 200 && x0 < 0; t++)
+        {
+            int cx = 2 + rng.Next(m.X1 - 6), cy = 2 + rng.Next(m.Y1 - 6);
+            if (gate == 1 && cx % 2 == 0) cx++;
+            if (gate == 0 && cx % 2 == 1) cx++;
+            if (gate == 3 && cy % 2 == 0) cy++;
+            if (gate == 2 && cy % 2 == 1) cy++;
+            if (cx + 5 > m.X1 || cy + 5 > m.Y1) continue;
+            if (cx + 1 <= 5 && cy + 4 >= h - 2) continue;       // 凹みの近くには置かない
+            x0 = cx;
+            y0 = cy;
+        }
+        if (x0 < 0) return null;
+        m.HouseX = x0 + 1;
+        m.HouseY = y0 + 1;
+        m.GateDir = gate;
+        int hx = m.HouseX, hy = m.HouseY;
+        for (int y = hy; y <= hy + 1; y++)
+            for (int x = hx; x <= hx + 1; x++) m.House[y * w + x] = true;
+        switch (gate)
+        {
+            case 0: m.GateOut[0] = hy * w + hx + 2; m.GateOut[1] = (hy + 1) * w + hx + 2; break;
+            case 1: m.GateOut[0] = hy * w + hx - 1; m.GateOut[1] = (hy + 1) * w + hx - 1; break;
+            case 2: m.GateOut[0] = (hy + 2) * w + hx; m.GateOut[1] = (hy + 2) * w + hx + 1; break;
+            default: m.GateOut[0] = (hy - 1) * w + hx; m.GateOut[1] = (hy - 1) * w + hx + 1; break;
+        }
+        for (int j = 0; j < ny; j++)
+            for (int i = 0; i < nx; i++)
+            {
+                int cx = 2 * i, cy = 2 * j;
+                if (cx >= x0 && cx <= x0 + 3 && cy >= y0 && cy <= y0 + 3) dead[j * nx + i] = true;
+            }
+
+        // 点 (i,j) と右(i+1,j)の間／下(i,j+1)の間が開いているか
+        var right = new bool[nx * ny];
+        var down = new bool[nx * ny];
+        bool Alive(int i, int j) => i >= 0 && i < nx && j >= 0 && j < ny && !dead[j * nx + i];
+
+        // 迷路の骨組み：行き止まりまで進んでは戻る（深さ優先）
+        int si = -1, sj = -1;
+        for (int j = 0; j < ny && si < 0; j++)
+            for (int i = 0; i < nx; i++)
+                if (Alive(i, j)) { si = i; sj = j; break; }
+        int alive = 0;
+        foreach (bool d in dead) if (!d) alive++;
+        var seen = new bool[nx * ny];
+        var stack = new Stack<(int i, int j)>();
+        stack.Push((si, sj));
+        seen[sj * nx + si] = true;
+        int reached = 1;
+        var nb = new List<(int di, int dj)>(4);
+        while (stack.Count > 0)
+        {
+            var (ci, cj) = stack.Peek();
+            nb.Clear();
+            foreach (var (di, dj) in Four)
+                if (Alive(ci + di, cj + dj) && !seen[(cj + dj) * nx + ci + di]) nb.Add((di, dj));
+            if (nb.Count == 0) { stack.Pop(); continue; }
+            var (ddi, ddj) = nb[rng.Next(nb.Count)];
+            int ni = ci + ddi, nj = cj + ddj;
+            if (ddi == 1) right[cj * nx + ci] = true;
+            else if (ddi == -1) right[nj * nx + ni] = true;
+            else if (ddj == 1) down[cj * nx + ci] = true;
+            else down[nj * nx + ni] = true;
+            seen[nj * nx + ni] = true;
+            reached++;
+            stack.Push((ni, nj));
+        }
+        if (reached != alive) return null;
+
+        // 入口の外側の2マスは必ずつなぐ
+        if (gate <= 1)
+        {
+            int ci = (gate == 0 ? x0 + 4 : x0 - 1) / 2, cj = (y0 + 1) / 2;
+            if (!Alive(ci, cj) || !Alive(ci, cj + 1)) return null;
+            down[cj * nx + ci] = true;
+        }
+        else
+        {
+            int cj = (gate == 2 ? y0 + 4 : y0 - 1) / 2, ci = (x0 + 1) / 2;
+            if (!Alive(ci, cj) || !Alive(ci + 1, cj)) return null;
+            right[cj * nx + ci] = true;
+        }
+
+        // 行き止まり（つながりが1つ以下の点）をなくす：まわりの壁を1か所開ける
+        int Degree(int i, int j)
+        {
+            int d = 0;
+            if (i + 1 < nx && right[j * nx + i]) d++;
+            if (i > 0 && right[j * nx + i - 1]) d++;
+            if (j + 1 < ny && down[j * nx + i]) d++;
+            if (j > 0 && down[(j - 1) * nx + i]) d++;
+            return d;
+        }
+        void Open(int i, int j, int di, int dj)
+        {
+            if (di == 1) right[j * nx + i] = true;
+            else if (di == -1) right[j * nx + i - 1] = true;
+            else if (dj == 1) down[j * nx + i] = true;
+            else down[(j - 1) * nx + i] = true;
+        }
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (int j = 0; j < ny; j++)
+                for (int i = 0; i < nx; i++)
+                {
+                    if (!Alive(i, j) || Degree(i, j) >= 2) continue;
+                    var cand = new List<(int di, int dj)>();
+                    foreach (var (di, dj) in Four)
+                    {
+                        if (!Alive(i + di, j + dj)) continue;
+                        bool isOpen = di == 1 ? right[j * nx + i] : di == -1 ? right[j * nx + i - 1] : dj == 1 ? down[j * nx + i] : down[(j - 1) * nx + i];
+                        if (!isOpen) cand.Add((di, dj));
+                    }
+                    if (cand.Count == 0) return null;
+                    var (ci, cj) = cand[rng.Next(cand.Count)];
+                    Open(i, j, ci, cj);
+                    changed = true;
+                }
+        }
+
+        // 少しだけ回り道（輪）を増やす
+        int extra = nx * ny / 18;
+        for (int k = 0; k < extra; k++)
+        {
+            int i = rng.Next(nx), j = rng.Next(ny);
+            if (!Alive(i, j)) continue;
+            var (di, dj) = Four[rng.Next(4)];
+            if (Alive(i + di, j + dj)) Open(i, j, di, dj);
+        }
+
+        // 通路のマスを開ける
+        for (int j = 0; j < ny; j++)
+            for (int i = 0; i < nx; i++)
+            {
+                if (!Alive(i, j)) continue;
+                m.Wall[2 * j * w + 2 * i] = false;
+                if (i + 1 < nx && right[j * nx + i] && Alive(i + 1, j)) m.Wall[2 * j * w + 2 * i + 1] = false;
+                if (j + 1 < ny && down[j * nx + i] && Alive(i, j + 1)) m.Wall[(2 * j + 1) * w + 2 * i] = false;
+            }
+        foreach (int g in m.GateOut) m.Wall[g] = false;
+
+        // ワープ：外周の通路の点どうしをつなぐ．凹みの列（0,1）は避ける
+        m.WarpRow = 2 * (1 + rng.Next(Math.Max(1, ny - 2)));
+        m.WarpCol = 2 * (1 + rng.Next(Math.Max(1, nx - 2)));
+        if (m.Wall[m.WarpRow * w] || m.Wall[m.WarpRow * w + m.X1] || m.Wall[m.WarpCol] || m.Wall[m.Y1 * w + m.WarpCol]) return null;
+
+        var dist = m.Distances(new[] { 0 });
+        for (int c = 0; c < w * h; c++)
+        {
+            if (m.Wall[c]) continue;
+            if (dist[c] >= Far) return null;
+            m.Corridors.Add(c);
+        }
+        // 行き止まりがないことと，入口の外が通れることを確かめる
+        foreach (int c in m.Corridors)
+        {
+            int open = 0;
+            for (int d = 0; d < 4; d++)
+                if (m.Next(c, d) >= 0) open++;
+            if (open < 2) return null;
+        }
+        return m;
     }
 
     private static Maze? TryGenerate(int w, int h, IRng rng)
@@ -215,7 +417,7 @@ public sealed class Maze
     }
 
     /// <summary>複数の出発点からの最短歩数（幅優先，ワープを含む）．行けないマスは Far</summary>
-    public int[] Distances(IEnumerable<int> sources)
+    public int[] Distances(IEnumerable<int> sources, bool warp = true)
     {
         var dist = new int[W * H];
         Array.Fill(dist, Far);
@@ -232,7 +434,7 @@ public sealed class Maze
             int c = queue[head++];
             for (int d = 0; d < 4; d++)
             {
-                int n = Next(c, d);
+                int n = Next(c, d, warp);
                 if (n < 0 || dist[n] != Far) continue;
                 dist[n] = dist[c] + 1;
                 queue[tail++] = n;

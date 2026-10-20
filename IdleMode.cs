@@ -104,7 +104,13 @@ internal sealed partial class WalkerApp
         _iBlinking = _iWhite = false;
         _rebirth = false;
         _art?.Dispose();
-        _maze = Maze.Generate(_lay.Cols, _lay.Rows, new SystemRng());
+        var kind = _cfg.MazeStyle switch
+        {
+            1 => MazeKind.Island,
+            2 => MazeKind.Grid,
+            _ => Random.Shared.Next(2) == 0 ? MazeKind.Island : MazeKind.Grid,
+        };
+        _maze = Maze.Generate(_lay.Cols, _lay.Rows, new SystemRng(), kind);
         _art = new MazeArt(_maze, _lay.T);
         _mg = new MazeGame(_maze, _cfg, null, Math.Max(0, _paceCarry));
         _paceCarry = -1;
@@ -292,8 +298,26 @@ internal sealed partial class WalkerApp
         }
         using (var g = _lives.BeginDraw())
         {
+            // 通路の主人公と見間違えないように，灰色の枠に入れて，絵は小さくする
+            float pw = Math.Max(1.5f, T / 16f);
+            float fx = pw, fy = T * 0.14f, fw = 2 * T - 2 * pw, fh = T * 0.72f, r = fh * 0.3f;
+            using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                path.AddArc(fx, fy, 2 * r, 2 * r, 180, 90);
+                path.AddArc(fx + fw - 2 * r, fy, 2 * r, 2 * r, 270, 90);
+                path.AddArc(fx + fw - 2 * r, fy + fh - 2 * r, 2 * r, 2 * r, 0, 90);
+                path.AddArc(fx, fy + fh - 2 * r, 2 * r, 2 * r, 90, 90);
+                path.CloseFigure();
+                using var pen = new Pen(Color.FromArgb(255, 150, 150, 150), pw) { LineJoin = System.Drawing.Drawing2D.LineJoin.Round };
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.DrawPath(pen, path);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+            }
+            int size = (int)(T * 0.56f);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
             for (int i = 0; i < mg.Lives && i < 2; i++)
-                g.DrawImage(_sp.Player[1, 1], new Rectangle(i * T, 0, T, T));
+                g.DrawImage(_sp.Player[1, 1], new Rectangle((int)((i + 0.5f) * T - size / 2f), (T - size) / 2, size, size));
         }
         _lives.Present();
     }
@@ -359,7 +383,7 @@ internal sealed partial class WalkerApp
             Bitmap bmp;
             if (gh.St == GSt.Eye)
                 bmp = _sp.Eyes[dir];
-            else if (gh.St == GSt.Out && powered)
+            else if (gh.St == GSt.Out && powered && !gh.Immune)
                 bmp = _sp.Scared[_iBlinking && _iWhite ? 1 : 0, (gh.X + gh.Y) & 1];   // 1マスごとに足が入れ替わる
             else
                 bmp = _sp.Enemy[i % 4, dir, (gh.X + gh.Y) & 1];
@@ -485,6 +509,7 @@ internal sealed partial class WalkerApp
         }
 
         _game = new Game(_lay.L, _cfg, new SystemRng(), playerRing, ghostRing, ghostColor, mg.PaceSec);
+        _game.Points = mg.Points;      // 途中で切り替わっても，ポイントは引き継ぐ
         _phase = Phase.Run;
         MarkAll();
         Redraw();

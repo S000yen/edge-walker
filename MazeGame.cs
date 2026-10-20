@@ -20,6 +20,7 @@ public sealed class MGhost
     public GSt St = GSt.House;
     public int ReleaseStep;    // 家にいる間：このブロック時間になったら出る
     public double Acc;
+    public bool Immune;        // 食べられて復活した直後．次の大きいクッキーを食べるまでは，反撃中でもおびえない
     public bool IsOut => St == GSt.Out;
 }
 
@@ -40,6 +41,9 @@ public sealed class MazeGame
     private readonly IRng _rng;
     private readonly List<MEvent> _ev = new();
     private readonly int[] _home;          // 家の入口（外）までの道のり
+    private int _awayUntil = -1;           // ゴーストを捕まえた直後，このブロック時間まで家から離れる
+    private bool _houseSeen;              // 家の近くまで来たことがある（家の場所を覚えた）
+    private readonly int[] _eyeHome;       // 同じ．ただしワープは通らない（目玉用）
     private int _powerCookies;
     private readonly double _pace0;
 
@@ -53,6 +57,7 @@ public sealed class MazeGame
         _rng = rng ?? new SystemRng();
         Cookie = new byte[m.W * m.H];
         _home = m.Distances(m.GateOut);
+        _eyeHome = m.Distances(m.GateOut, warp: false);
         MaxLives = Lives = Math.Clamp(cfg.IdleRevives, 0, 2);
 
         var cor = m.Corridors;
@@ -193,6 +198,7 @@ public sealed class MazeGame
             return _c.DotBoost;
         }
         _powerCookies--;
+        foreach (var gg in Ghosts) gg.Immune = false;       // 次の大きいクッキーで，復活したゴーストもおびえる
         Points += PtsPower;
         _ev.Add(new MEvent(MKind.Popup, PX, PY, 0, "+" + PtsPower));
         if (PowerLeft == 0) _ev.Add(new MEvent(MKind.PowerOn, PX, PY));
@@ -209,11 +215,12 @@ public sealed class MazeGame
             if (g.X != PX || g.Y != PY) continue;
             if (g.St == GSt.Out)
             {
-                if (PowerLeft > 0)
+                if (IsScared(g))
                 {
                     g.St = GSt.Eye;
                     g.Acc = 0;
                     Points += PtsGhost;
+                    if (_c.IdleAwayBlocks > 0) _awayUntil = Steps + _c.IdleAwayBlocks;
                     _ev.Add(new MEvent(MKind.GhostEaten, PX, PY, i));
                     _ev.Add(new MEvent(MKind.Popup, PX, PY, 0, "+" + PtsGhost));
                 }
@@ -226,6 +233,9 @@ public sealed class MazeGame
         }
         return false;
     }
+
+    /// <summary>反撃中で，しかもおびえているゴースト（復活した直後のゴーストはおびえない）</summary>
+    public bool IsScared(MGhost g) => g.St == GSt.Out && PowerLeft > 0 && !g.Immune;
 
     private bool Caught()
     {
@@ -283,7 +293,7 @@ public sealed class MazeGame
         int here = PY * W + PX;
         bool powered = PowerLeft > 0;
         // 反撃が切れる直前は，おびえているゴーストも危ない相手として扱う
-        bool ghostsHarmless = powered && PowerLeft > 2;
+        bool scaredSafe = powered && PowerLeft > 2;
         int[] md = M.Distances(new[] { here });
 
         var threats = new List<int>();
@@ -293,9 +303,16 @@ public sealed class MazeGame
             int gi = g.Y * W + g.X;
             if (g.St == GSt.Out)
             {
-                if (!ghostsHarmless) threats.Add(gi);
+                bool harmless = scaredSafe && !g.Immune;
+                if (!harmless) threats.Add(gi);
                 else if (md[gi] <= 14) prey.Add(gi);      // 近くのゴーストだけ追う（遠くまで追うと時間がかかる）
             }
+        }
+        // 家の近くにいるおびえたゴーストは，できるだけ追わない（遠くで捕まえると，目玉が戻るまで時間がかかる）
+        if (_c.IdleChaseHouseDist > 0 && prey.Count > 0)
+        {
+            var farPrey = prey.FindAll(p => _home[p] > _c.IdleChaseHouseDist);
+            if (farPrey.Count > 0) prey = farPrey;
         }
         int[]? gd = threats.Count > 0 ? M.Distances(threats) : null;
         bool danger = gd != null && gd[here] <= _c.IdleNear + 1;
@@ -310,6 +327,29 @@ public sealed class MazeGame
         }
         bool normalLeft = cookies.Count > 0;
         if (!normalLeft) cookies = powers;
+
+        // ゴーストを捕まえた直後は，家から遠いクッキーを食べに行く（目玉が家に戻って復活するので，家の近くは危ない）
+        bool away = Steps < _awayUntil;
+        if (away && normalLeft)
+        {
+            int th = Math.Max(12, _c.IdleHouseRadius + 2);
+            var far = cookies.FindAll(c => _home[c] >= th);
+            if (far.Count > 0) cookies = far;
+        }
+
+        // 家の近くに来たら家の場所を覚えておき，ゴーストが近づくまでは，家の周りのクッキーを先に食べる
+        if (!away && _c.IdleHouseRadius > 0)
+        {
+            if (_home[here] <= _c.IdleHouseRadius + 4) _houseSeen = true;
+            bool ghostNear = gd != null && gd[here] <= _c.IdleNear * 2;
+            int outCount = 0;
+            foreach (var og in Ghosts) if (og.St == GSt.Out) outCount++;
+            if (_houseSeen && !ghostNear && normalLeft && outCount <= _c.IdleHouseMaxOut)
+            {
+                var local = cookies.FindAll(c => _home[c] <= _c.IdleHouseRadius);
+                if (local.Count > 0) cookies = local;
+            }
+        }
 
         // 入るときの手間：大きいクッキーはできるだけ避ける（反撃中は特に）
         var ec = new double[M.W * M.H];
@@ -393,7 +433,7 @@ public sealed class MazeGame
         foreach (int c in powers)
         {
             if (md[c] >= Maze.Far || gd[c] <= md[c] + 1) continue;    // ゴーストが先に着く
-            s[c] -= 26.0;
+            s[c] -= 26.0 + Math.Max(0, 10 - md[c]) * 4.0;             // すぐそばの大きいクッキーは，遠くの安全な場所より強い目標にする
             pq.Enqueue(c, s[c]);
         }
         while (pq.TryDequeue(out int c, out double pr))
@@ -439,31 +479,28 @@ public sealed class MazeGame
     private bool MoveGhosts(double gain)
     {
         bool powered = PowerLeft > 0;
-        double ratio = powered ? _c.ScaredRatio : _c.GhostRatioAt(PaceSec);
         _boost = gain + (powered ? _c.PowerBoost : 0.0);
-        double speed = Math.Min(ratio / (1.0 + _boost), 1.99);
+        double speedScared = Math.Min(_c.ScaredRatio / (1.0 + _boost), 1.99);
+        double speedNormal = Math.Min(_c.GhostRatioAt(PaceSec) / (1.0 + _boost), 1.99);
         double near2 = (double)_c.IdleNear * _c.IdleNear;
 
         int[]?[] maps = new int[]?[Ghosts.Count];
-        if (!powered)
+        int[]? pd = null;
+        for (int i = 0; i < Ghosts.Count; i++)
         {
-            int[]? pd = null;
-            for (int i = 0; i < Ghosts.Count; i++)
-            {
-                var g = Ghosts[i];
-                if (g.St != GSt.Out) continue;
-                double dx = g.X - PX, dy = g.Y - PY;
-                if (dx * dx + dy * dy > near2) continue;       // 近くにいなければ狙わない
-                pd ??= M.Distances(new[] { PY * M.W + PX });
-                maps[i] = M.Distances(new[] { TargetFor(i, pd) });
-            }
+            var g = Ghosts[i];
+            if (g.St != GSt.Out || IsScared(g)) continue;
+            double dx = g.X - PX, dy = g.Y - PY;
+            if (dx * dx + dy * dy > near2) continue;       // 近くにいなければ狙わない
+            pd ??= M.Distances(new[] { PY * M.W + PX });
+            maps[i] = M.Distances(new[] { TargetFor(i, pd) });
         }
 
         for (int i = 0; i < Ghosts.Count; i++)
         {
             var g = Ghosts[i];
             if (g.St != GSt.Out) continue;
-            g.Acc += speed;
+            g.Acc += IsScared(g) ? speedScared : speedNormal;
             int n = (int)g.Acc;
             g.Acc -= n;
             for (int k = 0; k < n; k++)
@@ -497,15 +534,19 @@ public sealed class MazeGame
                     g.St = GSt.House;
                     g.Dir = M.GateDir;
                     g.ReleaseStep = Steps + _c.IdleReviveWait;
+                    g.Immune = true;
                     GateOpenUntil = Steps + 2;
                     _ev.Add(new MEvent(MKind.GhostBack, g.X, g.Y, i));
                     break;
                 }
+                // 目玉はワープを通らない．ワープなしでは家に戻れない場所にいるときだけ，例外的に通る
+                bool viaWarp = _eyeHome[c] >= Maze.Far;
+                var eh = viaWarp ? _home : _eyeHome;
                 var opts = new List<(int d, int cell)>();
                 for (int d = 0; d < 4; d++)
                 {
-                    int nc = M.Next(c, d);
-                    if (nc >= 0 && _home[nc] < _home[c]) opts.Add((d, nc));
+                    int nc = M.Next(c, d, viaWarp);
+                    if (nc >= 0 && eh[nc] < eh[c]) opts.Add((d, nc));
                 }
                 if (opts.Count == 0) break;
                 var pick = opts[_rng.Next(opts.Count)];

@@ -41,6 +41,10 @@ internal sealed class SettingsForm : Form
         new(TIdle, "うち大きいクッキーの数", 0, 40, 1, 0, s => s.IdlePower, (s, v) => s.IdlePower = (int)v),
         new(TIdle, "主人公のうっかり率（%）", 0, 50, 1, 0, s => s.IdleMistakePct, (s, v) => s.IdleMistakePct = (int)v),
         new(TIdle, "「近い」とみなす距離（マス）", 3, 30, 1, 0, s => s.IdleNear, (s, v) => s.IdleNear = (int)v),
+        new(TIdle, "主人公が家の周りを先に食べる範囲（マス，0でオフ）", 0, 30, 1, 0, s => s.IdleHouseRadius, (s, v) => s.IdleHouseRadius = (int)v),
+        new(TIdle, "家の周りを先に食べるのは，外のゴーストがこの数以下の間（4=ずっと）", 0, 4, 1, 0, s => s.IdleHouseMaxOut, (s, v) => s.IdleHouseMaxOut = (int)v),
+        new(TIdle, "ゴーストを捕まえたあと家から離れる長さ（ブロック，0でオフ）", 0, 200, 1, 0, s => s.IdleAwayBlocks, (s, v) => s.IdleAwayBlocks = (int)v),
+        new(TIdle, "家からこの距離以内のゴーストは追わない（マス，0でオフ）", 0, 30, 1, 0, s => s.IdleChaseHouseDist, (s, v) => s.IdleChaseHouseDist = (int)v),
         new(TIdle, "主人公が復活できる回数（0〜2）", 0, 2, 1, 0, s => s.IdleRevives, (s, v) => s.IdleRevives = (int)v),
         new(TIdle, "最初のゴーストが家を出るまで（ブロック）", 1, 100, 1, 0, s => s.IdleHouseFirst, (s, v) => s.IdleHouseFirst = (int)v),
         new(TIdle, "次のゴーストが出るまでの間隔（ブロック）", 1, 100, 1, 0, s => s.IdleHouseGap, (s, v) => s.IdleHouseGap = (int)v),
@@ -63,6 +67,8 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _chkFullscreen = new() { Text = "全画面のアプリ中は隠す", AutoSize = true };
     private readonly CheckBox _chkEdge = new() { Text = "画面の縁を歩き回る（エッジモード）．オフなら，普段は何も出さない", AutoSize = true };
     private readonly CheckBox _chkIdle = new() { Text = "操作がないとき，画面いっぱいの迷路で遊ぶ（メイズモード）", AutoSize = true };
+    private static readonly string[] MazeStyleNames = { "ランダム（毎回どちらか）", "島型（壁のかたまり）", "格子型（通路も壁も1マス幅）" };
+    private readonly ComboBox _cmbMaze = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
     private readonly CheckBox _chkPersonality = new() { Text = "迷路のゴーストに個性をつける（オフなら全員が最短で追う）", AutoSize = true };
     private readonly CheckBox _chkAutostart = new() { Text = "Windowsの起動時に自動で常駐する", AutoSize = true };
     private readonly Label _info = new() { AutoSize = true, ForeColor = Color.DimGray };
@@ -101,6 +107,7 @@ internal sealed class SettingsForm : Form
             };
         }
         _inputs[_cellsIdx].ValueChanged += (_, _) => UpdateInfo();
+        foreach (var n in MazeStyleNames) _cmbMaze.Items.Add(n);
         FillMonitors();
         _cmbMonitor.SelectedIndexChanged += (_, _) => UpdateInfo();
         _appliedTimer.Tick += (_, _) =>
@@ -231,6 +238,8 @@ internal sealed class SettingsForm : Form
             }
             if (name == TIdle)
             {
+                table.Controls.Add(MakeLabel("迷路の種類"), 0, row);
+                table.Controls.Add(_cmbMaze, 1, row++);
                 table.Controls.Add(_chkPersonality, 0, row);
                 table.SetColumnSpan(_chkPersonality, 2);
             }
@@ -283,6 +292,7 @@ internal sealed class SettingsForm : Form
         _chkEdge.Checked = s.EdgeMode;
         _chkIdle.Checked = s.IdleMode;
         _chkPersonality.Checked = s.IdlePersonality;
+        _cmbMaze.SelectedIndex = Math.Clamp(s.MazeStyle, 0, MazeStyleNames.Length - 1);
         UpdateInfo();
     }
 
@@ -306,6 +316,7 @@ internal sealed class SettingsForm : Form
         s.EdgeMode = _chkEdge.Checked;
         s.IdleMode = _chkIdle.Checked;
         s.IdlePersonality = _chkPersonality.Checked;
+        s.MazeStyle = Math.Max(0, _cmbMaze.SelectedIndex);
         _apply(s);
         _initial = s.Clone();
         foreach (var l in _applied) l.Visible = true;

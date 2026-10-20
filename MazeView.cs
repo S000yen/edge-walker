@@ -12,7 +12,8 @@ internal sealed class MazeArt : IDisposable
 {
     // 壁のかたまり（島）ごとに，外側と内側の線，それが入る範囲（迷路全体のピクセル座標）を持つ．
     // 見えている範囲に入るものだけ描くので，迷路が大きくても1回の描画は軽い
-    private readonly List<(GraphicsPath outer, GraphicsPath inner, Rectangle box)> _islands = new();
+    private readonly List<(GraphicsPath outer, GraphicsPath? inner, Rectangle box)> _islands = new();
+    private const float GridInset = 0.20f, GridRadius = 0.34f;   // 格子型の輪郭：壁の縁からの距離と，角の丸さ（マス比）
     public readonly Pen Pen;
     public readonly Pen GatePen, WarpPen;
     public readonly List<(int x, int y)> WarpCells = new();
@@ -32,9 +33,18 @@ internal sealed class MazeArt : IDisposable
         foreach (var loop in TraceLoops(m))
         {
             var outer = new GraphicsPath();
-            var inner = new GraphicsPath();
-            AddRounded(outer, loop, 0.10f * tile, 0.38f * tile, tile);
-            AddRounded(inner, loop, 0.30f * tile, 0.16f * tile, tile);
+            GraphicsPath? inner = null;
+            if (m.Kind == MazeKind.Grid)
+            {
+                // 壁が1マス幅なので，輪郭は1本だけ（中が抜けた管のように見える）
+                AddRounded(outer, loop, GridInset * tile, GridRadius * tile, tile);
+            }
+            else
+            {
+                inner = new GraphicsPath();
+                AddRounded(outer, loop, 0.10f * tile, 0.38f * tile, tile);
+                AddRounded(inner, loop, 0.30f * tile, 0.16f * tile, tile);
+            }
             int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
             foreach (var (x, y) in loop)
             {
@@ -54,7 +64,7 @@ internal sealed class MazeArt : IDisposable
         {
             if (!box.IntersectsWith(view)) continue;
             g.DrawPath(Pen, outer);
-            g.DrawPath(Pen, inner);
+            if (inner is not null) g.DrawPath(Pen, inner);
         }
         g.SmoothingMode = SmoothingMode.None;
     }
@@ -275,7 +285,7 @@ internal sealed class MazeArt : IDisposable
         foreach (var (outer, inner, _) in _islands)
         {
             outer.Dispose();
-            inner.Dispose();
+            inner?.Dispose();
         }
         _islands.Clear();
         Pen.Dispose();

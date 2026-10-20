@@ -33,6 +33,11 @@ public sealed class Settings
     public bool IdleMode { get; set; } = true;         // メイズモード（操作がない間，画面いっぱいの迷路で遊ぶ）を使う
     public int IdleSeconds { get; set; } = 60;         // 何秒操作がなければアイドルモードに入るか
     public int IdleRestartSec { get; set; } = 10;      // アイドルモードで1試合終わってから次を始めるまで（秒）
+    public int IdleHouseRadius { get; set; } = 10;     // 主人公が家の周りのクッキーを先に食べる範囲（通路のマス数．0でオフ）
+    public int IdleHouseMaxOut { get; set; } = 1;      // 外に出ているゴーストがこの数以下の間だけ，家の周りを先に食べる（4=ずっと）
+    public int IdleAwayBlocks { get; set; } = 20;      // ゴーストを捕まえたあと，家から離れたクッキーを食べに行く長さ（ブロック．0でオフ）
+    public int IdleChaseHouseDist { get; set; } = 8;   // 家からこの距離以内のおびえたゴーストは，ほかに追える相手がいれば追わない（0でオフ）
+    public int MazeStyle { get; set; } = 0;            // 迷路の種類：0=ランダム 1=島型 2=格子型
     public bool IdlePersonality { get; set; } = true;  // ゴーストの追いかけ方に個性をつける（オフなら全員が最短で追跡）
     public int IdleVision { get; set; } = 5;           // 迷路で見える範囲（キャラの周囲のマス数）
     public int IdleCookiePct { get; set; } = 100;      // 通路のうちクッキーを置く割合（%）
@@ -89,6 +94,11 @@ public sealed class Settings
         IdleHouseGap = Math.Clamp(IdleHouseGap, 1, 100);
         IdleReviveWait = Math.Clamp(IdleReviveWait, 1, 100);
         IdleMistakePct = Math.Clamp(IdleMistakePct, 0, 50);
+        MazeStyle = Math.Clamp(MazeStyle, 0, 2);
+        IdleHouseRadius = Math.Clamp(IdleHouseRadius, 0, 30);
+        IdleHouseMaxOut = Math.Clamp(IdleHouseMaxOut, 0, 4);
+        IdleAwayBlocks = Math.Clamp(IdleAwayBlocks, 0, 200);
+        IdleChaseHouseDist = Math.Clamp(IdleChaseHouseDist, 0, 30);
         IdleScatterMs = Math.Clamp(IdleScatterMs, 15, 300);
         SpawnGap = Math.Clamp(SpawnGap, 1, 8);
         FontScalePct = Math.Clamp(FontScalePct, 30, 200);

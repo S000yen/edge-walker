@@ -365,19 +365,14 @@ internal sealed partial class WalkerApp : ApplicationContext
     {
         _actors.Clear();
         var g = _game;
-        if (_phase == Phase.Birth)
-        {
-            var egg = _sp.Eggs[_birthStage];
-            _actors.Add((g.Pos, egg));
-            foreach (var gh in g.Ghosts) _actors.Add((gh.S, egg));
-            return;
-        }
+        bool birth = _phase == Phase.Birth;   // 誕生の演出は主人公だけ（ゴーストは最初から普通の姿）
+        if (birth) _actors.Add((g.Pos, _sp.Eggs[_birthStage]));
 
         // 食べたゴーストは，誕生の1段階目（ミニボム）の画像を少しの間だけ残す
         _bombs.RemoveAll(b => g.Steps >= b.until);
         foreach (var b in _bombs) _actors.Add((b.pos, _sp.Eggs[0]));
 
-        if (g.PlayerActive)
+        if (g.PlayerActive && !birth)
         {
             int frame = MouthCycle[g.Steps % MouthCycle.Length];
             var (dx, dy) = _lay.Heading(g.Pos, g.Dir);
